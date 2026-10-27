@@ -33,13 +33,14 @@ jobs:
           android {
             namespace 'com.mckay.home'
             compileSdk 34
-            defaultConfig { applicationId 'com.mckay.home'; minSdk 22; targetSdk 28; versionCode 1; versionName '1.0' }
+            defaultConfig { applicationId 'com.mckay.home'; minSdk 22; targetSdk 28; versionCode 2; versionName '2.0' }
             compileOptions { sourceCompatibility JavaVersion.VERSION_1_8; targetCompatibility JavaVersion.VERSION_1_8 }
             lint { abortOnError false }
           }
           EOF
           cat > app/src/main/AndroidManifest.xml <<'EOF'
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+            <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS"/>
             <uses-feature android:name="android.software.leanback" android:required="false"/>
             <uses-feature android:name="android.hardware.touchscreen" android:required="false"/>
             <application android:label="Home" android:icon="@drawable/banner" android:banner="@drawable/banner"
@@ -50,6 +51,11 @@ jobs:
                   <action android:name="android.intent.action.MAIN"/>
                   <category android:name="android.intent.category.LEANBACK_LAUNCHER"/>
                   <category android:name="android.intent.category.LAUNCHER"/>
+                </intent-filter>
+                <intent-filter>
+                  <action android:name="android.intent.action.MAIN"/>
+                  <category android:name="android.intent.category.HOME"/>
+                  <category android:name="android.intent.category.DEFAULT"/>
                 </intent-filter>
               </activity>
             </application>
@@ -65,6 +71,8 @@ jobs:
           package com.mckay.home;
 
           import android.app.Activity;
+          import android.app.usage.UsageEvents;
+          import android.app.usage.UsageStatsManager;
           import android.content.*;
           import android.content.pm.*;
           import android.graphics.*;
@@ -127,7 +135,7 @@ jobs:
               }
             }
 
-            FrameLayout root; Wall wallA, wallB; LinearLayout dock, grid; View panel;
+            FrameLayout root; Wall wallA, wallB; LinearLayout shelf, recentsBox, recents, dock, grid; View panel;
             SharedPreferences sp; Handler h = new Handler(Looper.getMainLooper());
             boolean bShown = false; int slide = 0;
             Runnable tick = new Runnable() { public void run() { rotate(false); h.postDelayed(this, 60000); } };
@@ -143,8 +151,8 @@ jobs:
               root.addView(wallA, new FrameLayout.LayoutParams(M, M));
               root.addView(wallB, new FrameLayout.LayoutParams(M, M));
               View scrim = new View(this);
-              scrim.setBackground(new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, new int[]{0x00000000, 0xB0000000}));
-              root.addView(scrim, new FrameLayout.LayoutParams(M, dp(360), Gravity.BOTTOM));
+              scrim.setBackground(new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, new int[]{0x00000000, 0xC0000000}));
+              root.addView(scrim, new FrameLayout.LayoutParams(M, dp(460), Gravity.BOTTOM));
 
               LinearLayout clk = new LinearLayout(this); clk.setOrientation(LinearLayout.VERTICAL); clk.setGravity(Gravity.END);
               TextClock t1 = new TextClock(this); t1.setFormat12Hour("h:mm"); t1.setFormat24Hour("H:mm");
@@ -156,13 +164,20 @@ jobs:
               cl.setMargins(0, dp(40), dp(56), 0);
               root.addView(clk, cl);
 
-              dock = new LinearLayout(this); dock.setOrientation(LinearLayout.HORIZONTAL);
-              dock.setGravity(Gravity.CENTER_VERTICAL); dock.setPadding(dp(18), dp(10), dp(18), dp(6));
-              GradientDrawable db = new GradientDrawable(); db.setCornerRadius(dp(30)); db.setColor(0x40FFFFFF);
-              dock.setBackground(db);
-              FrameLayout.LayoutParams dl = new FrameLayout.LayoutParams(W, W, Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
-              dl.bottomMargin = dp(36);
-              root.addView(dock, dl);
+              shelf = new LinearLayout(this); shelf.setOrientation(LinearLayout.VERTICAL);
+              recentsBox = new LinearLayout(this); recentsBox.setOrientation(LinearLayout.VERTICAL);
+              TextView rl = new TextView(this); rl.setText("Recently used"); rl.setTextColor(0xCCFFFFFF);
+              rl.setTextSize(16); rl.setPadding(dp(14), 0, 0, dp(2));
+              recentsBox.addView(rl);
+              recents = new LinearLayout(this); recents.setOrientation(LinearLayout.HORIZONTAL);
+              recentsBox.addView(recents);
+              shelf.addView(recentsBox);
+              dock = new LinearLayout(this); dock.setOrientation(LinearLayout.HORIZONTAL); dock.setGravity(Gravity.CENTER_VERTICAL);
+              LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(W, W); dlp.topMargin = dp(18);
+              shelf.addView(dock, dlp);
+              FrameLayout.LayoutParams sl = new FrameLayout.LayoutParams(W, W, Gravity.BOTTOM | Gravity.START);
+              sl.leftMargin = dp(56); sl.bottomMargin = dp(36);
+              root.addView(shelf, sl);
 
               LinearLayout pl = new LinearLayout(this); pl.setOrientation(LinearLayout.VERTICAL);
               pl.setPadding(dp(64), dp(40), dp(64), dp(24)); pl.setBackgroundColor(0xEE0A0A12); pl.setVisibility(View.GONE);
@@ -177,7 +192,7 @@ jobs:
 
               setContentView(root);
               rotate(true);
-              buildDock();
+              buildDock(); buildRecents();
               if (favs().isEmpty()) {
                 openPanel();
                 Toast.makeText(this, "Hold OK on your favourite apps to add them to the dock", Toast.LENGTH_LONG).show();
@@ -187,10 +202,14 @@ jobs:
             protected void onResume() {
               super.onResume();
               h.removeCallbacks(tick); h.postDelayed(tick, 60000);
-              if (panel.getVisibility() != View.VISIBLE) { buildDock(); dock.getChildAt(0).requestFocus(); }
+              if (panel.getVisibility() != View.VISIBLE) { buildDock(); buildRecents(); dock.getChildAt(0).requestFocus(); }
             }
             protected void onPause() { super.onPause(); h.removeCallbacks(tick); }
-            protected void onNewIntent(Intent i) { super.onNewIntent(i); if (panel.getVisibility() == View.VISIBLE) closePanel(); }
+            protected void onNewIntent(Intent i) {
+              super.onNewIntent(i);
+              if (panel.getVisibility() == View.VISIBLE) closePanel();
+              else dock.getChildAt(0).requestFocus();
+            }
             public void onBackPressed() { if (panel.getVisibility() == View.VISIBLE) closePanel(); }
             public boolean onKeyDown(int k, KeyEvent e) {
               if (k == KeyEvent.KEYCODE_MENU) { openPanel(); return true; }
@@ -272,7 +291,7 @@ jobs:
               p.setColor(0xFF3A3F5C); c.drawRoundRect(new RectF(0, 0, 128, 128), 28, 28, p);
               p.setColor(0xFFFFFFFF);
               for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++) c.drawCircle(34 + i * 30, 34 + j * 30, 8, p);
-              View t = tile(new BitmapDrawable(getResources(), bm), "All apps", 80);
+              View t = tile(new BitmapDrawable(getResources(), bm), "All apps", 88);
               t.setOnClickListener(v -> openPanel());
               return t;
             }
@@ -283,7 +302,7 @@ jobs:
                 try {
                   Drawable ic = pm.getApplicationIcon(pkg);
                   String lb = String.valueOf(pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)));
-                  View t = tile(ic, lb, 80);
+                  View t = tile(ic, lb, 88);
                   t.setOnClickListener(v -> launch(pkg));
                   t.setOnLongClickListener(v -> { toggleFav(pkg); if (dock.getChildCount() > 0) dock.getChildAt(0).requestFocus(); return true; });
                   dock.addView(t);
@@ -291,6 +310,53 @@ jobs:
               }
               dock.addView(allTile());
             }
+
+            // ---- recently used (needs usage access, see steps) ----
+            List<String> recentPkgs() {
+              List<String> seq = new ArrayList<>();
+              try {
+                UsageStatsManager u = (UsageStatsManager) getSystemService(Context.USAGE_STATS_SERVICE);
+                long now = System.currentTimeMillis();
+                UsageEvents ev = u.queryEvents(now - 14L * 86400000L, now);
+                UsageEvents.Event e = new UsageEvents.Event();
+                while (ev.hasNextEvent()) {
+                  ev.getNextEvent(e);
+                  if (e.getEventType() == UsageEvents.Event.MOVE_TO_FOREGROUND) {
+                    seq.remove(e.getPackageName());
+                    seq.add(e.getPackageName());
+                  }
+                }
+              } catch (Throwable t) { }
+              Collections.reverse(seq);
+              PackageManager pm = getPackageManager();
+              List<String> out = new ArrayList<>();
+              for (String pkg : seq) {
+                String lp = pkg.toLowerCase();
+                if (pkg.equals(getPackageName()) || lp.contains("launcher") || lp.contains("systemui")
+                    || lp.contains("inputmethod") || lp.contains("packageinstaller")) continue;
+                if (pm.getLeanbackLaunchIntentForPackage(pkg) == null && pm.getLaunchIntentForPackage(pkg) == null) continue;
+                out.add(pkg);
+                if (out.size() >= 8) break;
+              }
+              return out;
+            }
+            void buildRecents() {
+              recents.removeAllViews();
+              PackageManager pm = getPackageManager();
+              int n = 0;
+              for (String pkg : recentPkgs()) {
+                try {
+                  Drawable ic = pm.getApplicationIcon(pkg);
+                  String lb = String.valueOf(pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)));
+                  View t = tile(ic, lb, 64);
+                  t.setOnClickListener(v -> launch(pkg));
+                  recents.addView(t);
+                  n++;
+                } catch (PackageManager.NameNotFoundException e) { }
+              }
+              recentsBox.setVisibility(n > 0 ? View.VISIBLE : View.GONE);
+            }
+
             void launch(String pkg) {
               PackageManager pm = getPackageManager();
               Intent i = pm.getLeanbackLaunchIntentForPackage(pkg);
@@ -329,14 +395,14 @@ jobs:
                 if (first == null) first = t;
                 n++;
               }
-              dock.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
+              shelf.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
               panel.setVisibility(View.VISIBLE);
               if (first != null) first.requestFocus();
             }
             void closePanel() {
               panel.setVisibility(View.GONE);
-              dock.setDescendantFocusability(ViewGroup.FOCUS_BEFORE_DESCENDANTS);
-              buildDock();
+              shelf.setDescendantFocusability(ViewGroup.FOCUS_BEFORE_DESCENDANTS);
+              buildDock(); buildRecents();
               dock.getChildAt(0).requestFocus();
             }
           }
@@ -349,5 +415,4 @@ jobs:
         run: |
           cp app/build/outputs/apk/debug/app-debug.apk firetv-home.apk
           gh release create "v${{ github.run_number }}" firetv-home.apk --title "Build ${{ github.run_number }}" --notes "Fire TV Home" --latest
-
 
