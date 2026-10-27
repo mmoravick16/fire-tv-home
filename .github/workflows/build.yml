@@ -18,7 +18,7 @@ jobs:
           gradle-version: '8.5'
       - name: Write project files
         run: |
-          mkdir -p app/src/main/java/com/mckay/home app/src/main/res/drawable
+          mkdir -p app/src/main/java/com/mckay/home app/src/main/res/drawable app/src/main/res/xml app/src/main/res/values
           cat > settings.gradle <<'EOF'
           pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
           dependencyResolutionManagement { repositories { google(); mavenCentral() } }
@@ -33,7 +33,7 @@ jobs:
           android {
             namespace 'com.mckay.home'
             compileSdk 34
-            defaultConfig { applicationId 'com.mckay.home'; minSdk 22; targetSdk 28; versionCode 2; versionName '2.0' }
+            defaultConfig { applicationId 'com.mckay.home'; minSdk 22; targetSdk 28; versionCode 3; versionName '3.0' }
             compileOptions { sourceCompatibility JavaVersion.VERSION_1_8; targetCompatibility JavaVersion.VERSION_1_8 }
             lint { abortOnError false }
           }
@@ -58,14 +58,57 @@ jobs:
                   <category android:name="android.intent.category.DEFAULT"/>
                 </intent-filter>
               </activity>
+              <service android:name=".HomeRedirectService" android:exported="true"
+                  android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+                <intent-filter>
+                  <action android:name="android.accessibilityservice.AccessibilityService"/>
+                </intent-filter>
+                <meta-data android:name="android.accessibilityservice" android:resource="@xml/accessibility_service"/>
+              </service>
             </application>
           </manifest>
+          EOF
+          cat > app/src/main/res/values/strings.xml <<'EOF'
+          <resources>
+            <string name="svc_desc">Opens the custom Home screen when the Home button is pressed.</string>
+          </resources>
+          EOF
+          cat > app/src/main/res/xml/accessibility_service.xml <<'EOF'
+          <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+              android:accessibilityEventTypes="typeWindowStateChanged"
+              android:accessibilityFeedbackType="feedbackGeneric"
+              android:packageNames="com.amazon.tv.launcher"
+              android:notificationTimeout="100"
+              android:canRetrieveWindowContent="false"
+              android:description="@string/svc_desc"/>
           EOF
           cat > app/src/main/res/drawable/banner.xml <<'EOF'
           <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
             <gradient android:startColor="#FF1B2A49" android:endColor="#FFF2A65A" android:angle="270"/>
             <size android:width="320dp" android:height="180dp"/>
           </shape>
+          EOF
+          cat > app/src/main/java/com/mckay/home/HomeRedirectService.java <<'EOF'
+          package com.mckay.home;
+
+          import android.accessibilityservice.AccessibilityService;
+          import android.content.Intent;
+          import android.view.accessibility.AccessibilityEvent;
+
+          public class HomeRedirectService extends AccessibilityService {
+            long last = 0;
+            public void onAccessibilityEvent(AccessibilityEvent e) {
+              if (e == null || e.getPackageName() == null) return;
+              if (!"com.amazon.tv.launcher".contentEquals(e.getPackageName())) return;
+              long now = System.currentTimeMillis();
+              if (now - last < 1500) return;
+              last = now;
+              Intent i = new Intent(this, MainActivity.class);
+              i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+              try { startActivity(i); } catch (Exception ex) { }
+            }
+            public void onInterrupt() { }
+          }
           EOF
           cat > app/src/main/java/com/mckay/home/MainActivity.java <<'EOF'
           package com.mckay.home;
@@ -304,115 +347,5 @@ jobs:
                   String lb = String.valueOf(pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)));
                   View t = tile(ic, lb, 88);
                   t.setOnClickListener(v -> launch(pkg));
-                  t.setOnLongClickListener(v -> { toggleFav(pkg); if (dock.getChildCount() > 0) dock.getChildAt(0).requestFocus(); return true; });
-                  dock.addView(t);
-                } catch (PackageManager.NameNotFoundException e) { }
-              }
-              dock.addView(allTile());
-            }
-
-            // ---- recently used (needs usage access, see steps) ----
-            List<String> recentPkgs() {
-              List<String> seq = new ArrayList<>();
-              try {
-                UsageStatsManager u = (UsageStatsManager) getSystemService(Context.USAGE_STATS_SERVICE);
-                long now = System.currentTimeMillis();
-                UsageEvents ev = u.queryEvents(now - 14L * 86400000L, now);
-                UsageEvents.Event e = new UsageEvents.Event();
-                while (ev.hasNextEvent()) {
-                  ev.getNextEvent(e);
-                  if (e.getEventType() == UsageEvents.Event.MOVE_TO_FOREGROUND) {
-                    seq.remove(e.getPackageName());
-                    seq.add(e.getPackageName());
-                  }
-                }
-              } catch (Throwable t) { }
-              Collections.reverse(seq);
-              PackageManager pm = getPackageManager();
-              List<String> out = new ArrayList<>();
-              for (String pkg : seq) {
-                String lp = pkg.toLowerCase();
-                if (pkg.equals(getPackageName()) || lp.contains("launcher") || lp.contains("systemui")
-                    || lp.contains("inputmethod") || lp.contains("packageinstaller")) continue;
-                if (pm.getLeanbackLaunchIntentForPackage(pkg) == null && pm.getLaunchIntentForPackage(pkg) == null) continue;
-                out.add(pkg);
-                if (out.size() >= 8) break;
-              }
-              return out;
-            }
-            void buildRecents() {
-              recents.removeAllViews();
-              PackageManager pm = getPackageManager();
-              int n = 0;
-              for (String pkg : recentPkgs()) {
-                try {
-                  Drawable ic = pm.getApplicationIcon(pkg);
-                  String lb = String.valueOf(pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)));
-                  View t = tile(ic, lb, 64);
-                  t.setOnClickListener(v -> launch(pkg));
-                  recents.addView(t);
-                  n++;
-                } catch (PackageManager.NameNotFoundException e) { }
-              }
-              recentsBox.setVisibility(n > 0 ? View.VISIBLE : View.GONE);
-            }
-
-            void launch(String pkg) {
-              PackageManager pm = getPackageManager();
-              Intent i = pm.getLeanbackLaunchIntentForPackage(pkg);
-              if (i == null) i = pm.getLaunchIntentForPackage(pkg);
-              try { if (i != null) startActivity(i); } catch (Exception e) { Toast.makeText(this, "Could not open app", Toast.LENGTH_SHORT).show(); }
-            }
-            List<App> loadApps() {
-              PackageManager pm = getPackageManager();
-              Map<String, App> m = new LinkedHashMap<>();
-              for (String cat : new String[]{Intent.CATEGORY_LEANBACK_LAUNCHER, Intent.CATEGORY_LAUNCHER}) {
-                Intent q = new Intent(Intent.ACTION_MAIN).addCategory(cat);
-                for (ResolveInfo ri : pm.queryIntentActivities(q, 0)) {
-                  String pkg = ri.activityInfo.packageName;
-                  if (pkg.equals(getPackageName()) || m.containsKey(pkg)) continue;
-                  App a = new App(); a.pkg = pkg; a.label = String.valueOf(ri.loadLabel(pm)); a.icon = ri.loadIcon(pm);
-                  m.put(pkg, a);
-                }
-              }
-              List<App> l = new ArrayList<>(m.values());
-              Collections.sort(l, (x, y) -> x.label.compareToIgnoreCase(y.label));
-              return l;
-            }
-            void openPanel() {
-              grid.removeAllViews();
-              LinearLayout row = null; int n = 0; View first = null;
-              for (App a : loadApps()) {
-                if (n % 7 == 0) { row = new LinearLayout(this); grid.addView(row); }
-                View t = tile(a.icon, (isFav(a.pkg) ? "\u2605 " : "") + a.label, 72);
-                t.setOnClickListener(v -> launch(a.pkg));
-                t.setOnLongClickListener(v -> {
-                  toggleFav(a.pkg);
-                  ((TextView) ((LinearLayout) v).getChildAt(1)).setText((isFav(a.pkg) ? "\u2605 " : "") + a.label);
-                  return true;
-                });
-                row.addView(t);
-                if (first == null) first = t;
-                n++;
-              }
-              shelf.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
-              panel.setVisibility(View.VISIBLE);
-              if (first != null) first.requestFocus();
-            }
-            void closePanel() {
-              panel.setVisibility(View.GONE);
-              shelf.setDescendantFocusability(ViewGroup.FOCUS_BEFORE_DESCENDANTS);
-              buildDock(); buildRecents();
-              dock.getChildAt(0).requestFocus();
-            }
-          }
-          EOF
-      - name: Build
-        run: gradle assembleDebug --no-daemon
-      - name: Publish APK
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          cp app/build/outputs/apk/debug/app-debug.apk firetv-home.apk
-          gh release create "v${{ github.run_number }}" firetv-home.apk --title "Build ${{ github.run_number }}" --notes "Fire TV Home" --latest
+                  t.setOnLongClickListener(v -> { toggleFav(pkg); if (dock.getChildCount() > 0) dock.getChildAt
 
