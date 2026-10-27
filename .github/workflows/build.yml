@@ -1,0 +1,353 @@
+name: Build Fire TV Home
+on:
+  push:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.5'
+      - name: Write project files
+        run: |
+          mkdir -p app/src/main/java/com/mckay/home app/src/main/res/drawable
+          cat > settings.gradle <<'EOF'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositories { google(); mavenCentral() } }
+          rootProject.name = 'FireTVHome'
+          include ':app'
+          EOF
+          cat > build.gradle <<'EOF'
+          plugins { id 'com.android.application' version '8.2.2' apply false }
+          EOF
+          cat > app/build.gradle <<'EOF'
+          plugins { id 'com.android.application' }
+          android {
+            namespace 'com.mckay.home'
+            compileSdk 34
+            defaultConfig { applicationId 'com.mckay.home'; minSdk 22; targetSdk 28; versionCode 1; versionName '1.0' }
+            compileOptions { sourceCompatibility JavaVersion.VERSION_1_8; targetCompatibility JavaVersion.VERSION_1_8 }
+            lint { abortOnError false }
+          }
+          EOF
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+            <uses-feature android:name="android.software.leanback" android:required="false"/>
+            <uses-feature android:name="android.hardware.touchscreen" android:required="false"/>
+            <application android:label="Home" android:icon="@drawable/banner" android:banner="@drawable/banner"
+                android:theme="@android:style/Theme.Material.NoActionBar">
+              <activity android:name=".MainActivity" android:exported="true" android:launchMode="singleTask"
+                  android:stateNotNeeded="true" android:screenOrientation="landscape">
+                <intent-filter>
+                  <action android:name="android.intent.action.MAIN"/>
+                  <category android:name="android.intent.category.LEANBACK_LAUNCHER"/>
+                  <category android:name="android.intent.category.LAUNCHER"/>
+                </intent-filter>
+              </activity>
+            </application>
+          </manifest>
+          EOF
+          cat > app/src/main/res/drawable/banner.xml <<'EOF'
+          <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+            <gradient android:startColor="#FF1B2A49" android:endColor="#FFF2A65A" android:angle="270"/>
+            <size android:width="320dp" android:height="180dp"/>
+          </shape>
+          EOF
+          cat > app/src/main/java/com/mckay/home/MainActivity.java <<'EOF'
+          package com.mckay.home;
+
+          import android.app.Activity;
+          import android.content.*;
+          import android.content.pm.*;
+          import android.graphics.*;
+          import android.graphics.drawable.*;
+          import android.os.*;
+          import android.text.TextUtils;
+          import android.view.*;
+          import android.widget.*;
+          import java.io.File;
+          import java.util.*;
+
+          public class MainActivity extends Activity {
+            static class App { String pkg, label; Drawable icon; }
+
+            // sky top, sky bottom, sun, ridge1, ridge2, ridge3
+            static final int[][] PAL = {
+              {0xFF1B2A49, 0xFFF2A65A, 0xFFFFE3A3, 0xFF3D3B5C, 0xFF2A2A44, 0xFF161628},
+              {0xFF0F2027, 0xFF2C5364, 0xFFCFE9E1, 0xFF1F4037, 0xFF133026, 0xFF0A1F18},
+              {0xFF0B1D3A, 0xFF4B7BA8, 0xFFFFF1D0, 0xFF2D5A7B, 0xFF1D4260, 0xFF0F2A40},
+              {0xFF120C2B, 0xFF5B3A78, 0xFFFFD6A5, 0xFF3A2250, 0xFF241437, 0xFF150B22}
+            };
+
+            static class Wall extends View {
+              Bitmap bmp; int scene; Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+              Wall(Context c) { super(c); p.setFilterBitmap(true); setLayerType(View.LAYER_TYPE_HARDWARE, null); }
+              void show(int s, Bitmap b) { scene = s; bmp = b; invalidate(); }
+              protected void onDraw(Canvas c) {
+                int w = getWidth(), h = getHeight();
+                if (bmp != null) {
+                  float s = Math.max((float) w / bmp.getWidth(), (float) h / bmp.getHeight());
+                  float dw = bmp.getWidth() * s, dh = bmp.getHeight() * s;
+                  c.drawBitmap(bmp, null, new RectF((w - dw) / 2, (h - dh) / 2, (w + dw) / 2, (h + dh) / 2), p);
+                  return;
+                }
+                int idx = scene % PAL.length;
+                int[] pal = PAL[idx];
+                Random r = new Random(idx * 977 + 13);
+                p.setShader(new LinearGradient(0, 0, 0, h * 0.8f, pal[0], pal[1], Shader.TileMode.CLAMP));
+                c.drawRect(0, 0, w, h, p);
+                p.setShader(null);
+                if (idx == 3) {
+                  p.setColor(0xCCFFFFFF);
+                  for (int i = 0; i < 90; i++) c.drawCircle(r.nextFloat() * w, r.nextFloat() * h * 0.5f, 1 + r.nextFloat() * 2, p);
+                }
+                float sx = w * (0.25f + 0.5f * r.nextFloat()), sy = h * 0.46f;
+                p.setColor(pal[2]); p.setAlpha(50); c.drawCircle(sx, sy, h * 0.17f, p);
+                p.setAlpha(255); c.drawCircle(sx, sy, h * 0.065f, p);
+                float[] base = {0.64f, 0.76f, 0.88f}, amp = {0.2f, 0.14f, 0.09f};
+                for (int L = 0; L < 3; L++) {
+                  p.setColor(pal[3 + L]);
+                  int n = 10; float step = (float) w / n;
+                  float[] ys = new float[n + 1];
+                  for (int i = 0; i <= n; i++) ys[i] = h * base[L] - r.nextFloat() * h * amp[L];
+                  Path path = new Path();
+                  path.moveTo(0, h); path.lineTo(0, ys[0]);
+                  for (int i = 1; i <= n; i++) path.cubicTo((i - 0.5f) * step, ys[i - 1], (i - 0.5f) * step, ys[i], i * step, ys[i]);
+                  path.lineTo(w, h); path.close();
+                  c.drawPath(path, p);
+                }
+              }
+            }
+
+            FrameLayout root; Wall wallA, wallB; LinearLayout dock, grid; View panel;
+            SharedPreferences sp; Handler h = new Handler(Looper.getMainLooper());
+            boolean bShown = false; int slide = 0;
+            Runnable tick = new Runnable() { public void run() { rotate(false); h.postDelayed(this, 60000); } };
+            static final int M = ViewGroup.LayoutParams.MATCH_PARENT, W = ViewGroup.LayoutParams.WRAP_CONTENT;
+
+            int dp(int v) { return Math.round(v * getResources().getDisplayMetrics().density); }
+
+            protected void onCreate(Bundle b) {
+              super.onCreate(b);
+              sp = getSharedPreferences("home", MODE_PRIVATE);
+              root = new FrameLayout(this); root.setBackgroundColor(0xFF000000);
+              wallA = new Wall(this); wallB = new Wall(this);
+              root.addView(wallA, new FrameLayout.LayoutParams(M, M));
+              root.addView(wallB, new FrameLayout.LayoutParams(M, M));
+              View scrim = new View(this);
+              scrim.setBackground(new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, new int[]{0x00000000, 0xB0000000}));
+              root.addView(scrim, new FrameLayout.LayoutParams(M, dp(360), Gravity.BOTTOM));
+
+              LinearLayout clk = new LinearLayout(this); clk.setOrientation(LinearLayout.VERTICAL); clk.setGravity(Gravity.END);
+              TextClock t1 = new TextClock(this); t1.setFormat12Hour("h:mm"); t1.setFormat24Hour("H:mm");
+              t1.setTextColor(0xFFFFFFFF); t1.setTextSize(44); t1.setShadowLayer(8, 0, 2, 0x99000000);
+              TextClock t2 = new TextClock(this); t2.setFormat12Hour("EEEE, MMMM d"); t2.setFormat24Hour("EEEE, MMMM d");
+              t2.setTextColor(0xDDFFFFFF); t2.setTextSize(18); t2.setShadowLayer(8, 0, 2, 0x99000000);
+              clk.addView(t1); clk.addView(t2);
+              FrameLayout.LayoutParams cl = new FrameLayout.LayoutParams(W, W, Gravity.TOP | Gravity.END);
+              cl.setMargins(0, dp(40), dp(56), 0);
+              root.addView(clk, cl);
+
+              dock = new LinearLayout(this); dock.setOrientation(LinearLayout.HORIZONTAL);
+              dock.setGravity(Gravity.CENTER_VERTICAL); dock.setPadding(dp(18), dp(10), dp(18), dp(6));
+              GradientDrawable db = new GradientDrawable(); db.setCornerRadius(dp(30)); db.setColor(0x40FFFFFF);
+              dock.setBackground(db);
+              FrameLayout.LayoutParams dl = new FrameLayout.LayoutParams(W, W, Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+              dl.bottomMargin = dp(36);
+              root.addView(dock, dl);
+
+              LinearLayout pl = new LinearLayout(this); pl.setOrientation(LinearLayout.VERTICAL);
+              pl.setPadding(dp(64), dp(40), dp(64), dp(24)); pl.setBackgroundColor(0xEE0A0A12); pl.setVisibility(View.GONE);
+              TextView title = new TextView(this);
+              title.setText("All apps  -  hold OK on an app to add or remove it from the dock");
+              title.setTextColor(0xFFFFFFFF); title.setTextSize(20); title.setPadding(0, 0, 0, dp(16));
+              pl.addView(title);
+              ScrollView sv = new ScrollView(this);
+              grid = new LinearLayout(this); grid.setOrientation(LinearLayout.VERTICAL);
+              sv.addView(grid); pl.addView(sv);
+              root.addView(pl, new FrameLayout.LayoutParams(M, M)); panel = pl;
+
+              setContentView(root);
+              rotate(true);
+              buildDock();
+              if (favs().isEmpty()) {
+                openPanel();
+                Toast.makeText(this, "Hold OK on your favourite apps to add them to the dock", Toast.LENGTH_LONG).show();
+              } else dock.getChildAt(0).requestFocus();
+            }
+
+            protected void onResume() {
+              super.onResume();
+              h.removeCallbacks(tick); h.postDelayed(tick, 60000);
+              if (panel.getVisibility() != View.VISIBLE) { buildDock(); dock.getChildAt(0).requestFocus(); }
+            }
+            protected void onPause() { super.onPause(); h.removeCallbacks(tick); }
+            protected void onNewIntent(Intent i) { super.onNewIntent(i); if (panel.getVisibility() == View.VISIBLE) closePanel(); }
+            public void onBackPressed() { if (panel.getVisibility() == View.VISIBLE) closePanel(); }
+            public boolean onKeyDown(int k, KeyEvent e) {
+              if (k == KeyEvent.KEYCODE_MENU) { openPanel(); return true; }
+              return super.onKeyDown(k, e);
+            }
+
+            // ---- wallpapers ----
+            List<File> imgs() {
+              List<File> out = new ArrayList<>();
+              File d = getExternalFilesDir("wallpapers");
+              File[] fs = d == null ? null : d.listFiles();
+              if (fs != null) {
+                Arrays.sort(fs);
+                for (File f : fs) {
+                  String n = f.getName().toLowerCase();
+                  if (n.endsWith(".jpg") || n.endsWith(".jpeg") || n.endsWith(".png") || n.endsWith(".webp")) out.add(f);
+                }
+              }
+              return out;
+            }
+            Bitmap decode(File f) {
+              try {
+                BitmapFactory.Options o = new BitmapFactory.Options(); o.inJustDecodeBounds = true;
+                BitmapFactory.decodeFile(f.getPath(), o);
+                int s = 1; while (o.outWidth / (s * 2) >= 1920) s *= 2;
+                BitmapFactory.Options o2 = new BitmapFactory.Options();
+                o2.inSampleSize = s; o2.inPreferredConfig = Bitmap.Config.RGB_565;
+                return BitmapFactory.decodeFile(f.getPath(), o2);
+              } catch (Throwable t) { return null; }
+            }
+            void rotate(boolean first) {
+              List<File> im = imgs();
+              int count = im.isEmpty() ? PAL.length : im.size();
+              slide = first ? 0 : (slide + 1) % count;
+              Bitmap bm = im.isEmpty() ? null : decode(im.get(slide));
+              if (first) { wallA.show(slide, bm); wallB.setAlpha(0f); bShown = false; return; }
+              if (bShown) { wallA.show(slide, bm); wallB.animate().alpha(0f).setDuration(1500).start(); bShown = false; }
+              else { wallB.show(slide, bm); wallB.animate().alpha(1f).setDuration(1500).start(); bShown = true; }
+            }
+
+            // ---- favourites ----
+            List<String> favs() {
+              List<String> l = new ArrayList<>();
+              for (String s : sp.getString("favs", "").split(",")) if (!s.isEmpty()) l.add(s);
+              return l;
+            }
+            boolean isFav(String pkg) { return favs().contains(pkg); }
+            void toggleFav(String pkg) {
+              List<String> l = favs();
+              if (l.contains(pkg)) l.remove(pkg);
+              else if (l.size() >= 8) { Toast.makeText(this, "Dock is full (8)", Toast.LENGTH_SHORT).show(); return; }
+              else l.add(pkg);
+              sp.edit().putString("favs", TextUtils.join(",", l)).apply();
+              buildDock();
+            }
+
+            // ---- UI pieces ----
+            View tile(Drawable icon, String label, int iconDp) {
+              LinearLayout t = new LinearLayout(this);
+              t.setOrientation(LinearLayout.VERTICAL); t.setGravity(Gravity.CENTER_HORIZONTAL);
+              t.setPadding(dp(14), dp(12), dp(14), dp(10));
+              t.setFocusable(true); t.setClickable(true); t.setLongClickable(true);
+              ImageView iv = new ImageView(this); iv.setImageDrawable(icon);
+              t.addView(iv, new LinearLayout.LayoutParams(dp(iconDp), dp(iconDp)));
+              TextView tv = new TextView(this); tv.setText(label); tv.setTextColor(0xFFFFFFFF); tv.setTextSize(13);
+              tv.setSingleLine(true); tv.setEllipsize(TextUtils.TruncateAt.END); tv.setGravity(Gravity.CENTER);
+              tv.setPadding(0, dp(6), 0, 0);
+              t.addView(tv, new LinearLayout.LayoutParams(dp(iconDp + 20), W));
+              t.setOnFocusChangeListener((v, f) -> {
+                v.animate().scaleX(f ? 1.16f : 1f).scaleY(f ? 1.16f : 1f).setDuration(120).start();
+                if (f) { GradientDrawable g = new GradientDrawable(); g.setCornerRadius(dp(18)); g.setColor(0x55FFFFFF); v.setBackground(g); }
+                else v.setBackground(null);
+              });
+              return t;
+            }
+            View allTile() {
+              Bitmap bm = Bitmap.createBitmap(128, 128, Bitmap.Config.ARGB_8888);
+              Canvas c = new Canvas(bm); Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+              p.setColor(0xFF3A3F5C); c.drawRoundRect(new RectF(0, 0, 128, 128), 28, 28, p);
+              p.setColor(0xFFFFFFFF);
+              for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++) c.drawCircle(34 + i * 30, 34 + j * 30, 8, p);
+              View t = tile(new BitmapDrawable(getResources(), bm), "All apps", 80);
+              t.setOnClickListener(v -> openPanel());
+              return t;
+            }
+            void buildDock() {
+              dock.removeAllViews();
+              PackageManager pm = getPackageManager();
+              for (String pkg : favs()) {
+                try {
+                  Drawable ic = pm.getApplicationIcon(pkg);
+                  String lb = String.valueOf(pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)));
+                  View t = tile(ic, lb, 80);
+                  t.setOnClickListener(v -> launch(pkg));
+                  t.setOnLongClickListener(v -> { toggleFav(pkg); if (dock.getChildCount() > 0) dock.getChildAt(0).requestFocus(); return true; });
+                  dock.addView(t);
+                } catch (PackageManager.NameNotFoundException e) { }
+              }
+              dock.addView(allTile());
+            }
+            void launch(String pkg) {
+              PackageManager pm = getPackageManager();
+              Intent i = pm.getLeanbackLaunchIntentForPackage(pkg);
+              if (i == null) i = pm.getLaunchIntentForPackage(pkg);
+              try { if (i != null) startActivity(i); } catch (Exception e) { Toast.makeText(this, "Could not open app", Toast.LENGTH_SHORT).show(); }
+            }
+            List<App> loadApps() {
+              PackageManager pm = getPackageManager();
+              Map<String, App> m = new LinkedHashMap<>();
+              for (String cat : new String[]{Intent.CATEGORY_LEANBACK_LAUNCHER, Intent.CATEGORY_LAUNCHER}) {
+                Intent q = new Intent(Intent.ACTION_MAIN).addCategory(cat);
+                for (ResolveInfo ri : pm.queryIntentActivities(q, 0)) {
+                  String pkg = ri.activityInfo.packageName;
+                  if (pkg.equals(getPackageName()) || m.containsKey(pkg)) continue;
+                  App a = new App(); a.pkg = pkg; a.label = String.valueOf(ri.loadLabel(pm)); a.icon = ri.loadIcon(pm);
+                  m.put(pkg, a);
+                }
+              }
+              List<App> l = new ArrayList<>(m.values());
+              Collections.sort(l, (x, y) -> x.label.compareToIgnoreCase(y.label));
+              return l;
+            }
+            void openPanel() {
+              grid.removeAllViews();
+              LinearLayout row = null; int n = 0; View first = null;
+              for (App a : loadApps()) {
+                if (n % 7 == 0) { row = new LinearLayout(this); grid.addView(row); }
+                View t = tile(a.icon, (isFav(a.pkg) ? "\u2605 " : "") + a.label, 72);
+                t.setOnClickListener(v -> launch(a.pkg));
+                t.setOnLongClickListener(v -> {
+                  toggleFav(a.pkg);
+                  ((TextView) ((LinearLayout) v).getChildAt(1)).setText((isFav(a.pkg) ? "\u2605 " : "") + a.label);
+                  return true;
+                });
+                row.addView(t);
+                if (first == null) first = t;
+                n++;
+              }
+              dock.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
+              panel.setVisibility(View.VISIBLE);
+              if (first != null) first.requestFocus();
+            }
+            void closePanel() {
+              panel.setVisibility(View.GONE);
+              dock.setDescendantFocusability(ViewGroup.FOCUS_BEFORE_DESCENDANTS);
+              buildDock();
+              dock.getChildAt(0).requestFocus();
+            }
+          }
+          EOF
+      - name: Build
+        run: gradle assembleDebug --no-daemon
+      - name: Publish APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk firetv-home.apk
+          gh release create "v${{ github.run_number }}" firetv-home.apk --title "Build ${{ github.run_number }}" --notes "Fire TV Home" --latest
+
+
